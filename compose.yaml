@@ -1,0 +1,6 @@
+services:
+  fastapi:
+    build: .
+    image: rahul4251/fastapi:latest
+    ports:
+      - "8000:8000"
