@@ -93,7 +93,7 @@ jobs:
             rahul4251/fastapi:${TEST_TAG}
           
           echo "⏳ Waiting for test container to start..."
-          sleep 3
+          sleep 10
         EOF
 
     # Step 9: Validate test container
@@ -120,7 +120,7 @@ jobs:
           
           # Simple check - see if container is up for 10 seconds
           echo "⏳ Waiting for container to stabilize..."
-          sleep 10
+          sleep 20
           
           # Check if container is still running
           if docker ps --filter "name=fastapi-test" --format "{{.Names}}" | grep -q "fastapi-test"; then
