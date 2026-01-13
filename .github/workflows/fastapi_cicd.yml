@@ -1,0 +1,68 @@
+name: fastapi CI/CD
+
+# trigger
+on: 
+    # [workflow_dispatch] 
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Log in to Docker Hub
+      run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u "rahul4251" --password-stdin
+
+    - name: Build Docker image
+      run: docker build -t rahul4251/fastapi:latest .
+
+    - name: Push Docker image
+      run: docker push rahul4251/fastapi:latest
+
+
+    - name: Set up SSH
+ 
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+        chmod 600 ~/.ssh/id_ed25519
+        ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+        ssh-keyscan -H 69.62.79.61 >> ~/.ssh/known_hosts
+
+    - name: Debug SSH key setup
+
+      run: |
+        echo "Checking if SSH key file exists and is non-empty..."
+        ls -l ~/.ssh
+        if [ -s ~/.ssh/id_ed25519 ]; then
+          echo "SSH key file exists and is not empty ✅"
+          echo "Key file size:"
+          stat --printf="%s bytes\n" ~/.ssh/id_ed25519
+          echo "First 2 lines of SSH key:"
+          head -n 2 ~/.ssh/id_ed25519 | sed 's/./&/g'
+          echo "Last 2 lines of SSH key:"
+          tail -n 2 ~/.ssh/id_ed25519 | sed 's/./&/g'
+        else
+          echo "❌ SSH key file is empty or missing"
+          exit 1
+        fi
+
+    - name: Test SSH connection
+      run: |
+        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o BatchMode=yes root@69.62.79.61 "echo '✅ SSH connection successful'" || echo "❌ SSH connection failed"
+    
+    - name: Deployment on vm 
+      env:
+        SSH_KEY: ~/.ssh/id_ed25519
+      run: |
+        ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@69.62.79.61 << 'EOF'
+          cd doc_verify_api
+          sudo docker pull rahul4251/fastapi:latest
+          sudo docker compose down
+          sudo docker compose up -d
+        EOF
