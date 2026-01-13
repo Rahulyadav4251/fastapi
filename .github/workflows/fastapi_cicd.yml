@@ -59,8 +59,11 @@ jobs:
     - name: Deployment on vm 
       env:
         SSH_KEY: ~/.ssh/id_ed25519
+        DOCKER_USERNAME: rahul4251
+        DOCKER_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
       run: |
         ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@69.62.79.61 << 'EOF'
+          echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
           cd fastapi
           sudo docker pull rahul4251/fastapi:latest
           sudo docker compose down
