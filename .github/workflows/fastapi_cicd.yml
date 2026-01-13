@@ -61,7 +61,7 @@ jobs:
         SSH_KEY: ~/.ssh/id_ed25519
       run: |
         ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@69.62.79.61 << 'EOF'
-          cd doc_verify_api
+          cd fastapi
           sudo docker pull rahul4251/fastapi:latest
           sudo docker compose down
           sudo docker compose up -d
