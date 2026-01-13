@@ -1,7 +1,6 @@
 from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-import  sdafasdfasef
 
 app = FastAPI()
 
