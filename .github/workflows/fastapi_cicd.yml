@@ -71,7 +71,7 @@ jobs:
         
         ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
-            root@${{ secrets.SERVER_IP }} << 'EOF'
+            root@${{ secrets.SERVER_IP }} << EOF
           # Login to Docker Hub on server
           echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u "rahul4251" --password-stdin
           
@@ -103,7 +103,7 @@ jobs:
         echo "🔍 Validating test container..."
         
         # Check if container is running
-        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} << 'CHECKEOF'
+        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} << EOF
           # Check if container is running
           if ! docker ps --filter "name=fastapi-test" --format "{{.Names}}" | grep -q "fastapi-test"; then
             echo "❌ Test container is not running"
@@ -132,7 +132,7 @@ jobs:
             docker logs fastapi-test 2>/dev/null || echo "No logs available"
             exit 1
           fi
-        CHECKEOF
+        EOF
         
         # Check if SSH command succeeded
         if [ $? -eq 0 ]; then
@@ -166,7 +166,7 @@ jobs:
         
         ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
-            root@${{ secrets.SERVER_IP }} << 'EOF'
+            root@${{ secrets.SERVER_IP }} << EOF
           # Tag test image as stable
           echo "🏷️  Tagging image as stable..."
           docker tag rahul4251/fastapi:${TEST_TAG} rahul4251/fastapi:stable
@@ -216,7 +216,7 @@ jobs:
         echo "🧹 Cleaning up after test failure..."
         ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
-            root@${{ secrets.SERVER_IP }} << 'CLEANUPEOF'
+            root@${{ secrets.SERVER_IP }} << EOF
           echo "=== CLEANING UP TEST RESOURCES ==="
           
           # Stop and remove test container
@@ -233,7 +233,7 @@ jobs:
           echo ""
           echo "📊 Current production status:"
           docker ps --filter "name=fastapi" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
-        CLEANUPEOF
+        EOF
 
     # Step 12: Final status report
     - name: Deployment status report
