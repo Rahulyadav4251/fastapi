@@ -1,6 +1,27 @@
+
 services:
   fastapi:
-    build: .
     image: rahul4251/fastapi:latest
+    container_name: fastapi-app
     ports:
-      - "8000:8000"
+      - "8069:8000"
+    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - fastapi-network
+
+networks:
+  fastapi-network:
+    driver: bridge

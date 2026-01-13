@@ -1,71 +1,364 @@
-name: fastapi CI/CD
+name: FastAPI CI/CD Pipeline
 
-# trigger
-on: 
-    # [workflow_dispatch] 
+# Trigger configuration
+on:
   push:
     branches:
       - main
+  # Uncomment below to allow manual triggers from GitHub UI
+  # workflow_dispatch:
+  #   inputs:
+  #     rollback_tag:
+  #       description: 'Rollback to specific tag (optional)'
+  #       required: false
+
+# Environment variables for the entire workflow
+env:
+  DOCKER_REGISTRY: docker.io
+  DOCKER_IMAGE_NAME: rahul4251/fastapi
+  DEPLOYMENT_SERVER: 69.62.79.61
+  DEPLOYMENT_USER: root
+  APP_DIR: /root/fastapi
 
 jobs:
-  build-and-deploy:
+  # Job 1: Build and push Docker image
+  build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      docker_tag: ${{ steps.tag_image.outputs.docker_tag }}
+      commit_sha: ${{ github.sha }}
 
     steps:
-    - name: Checkout code
+    - name: Checkout source code
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Fetch all history for proper versioning
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Generate Docker image tag
+      id: tag_image
+      run: |
+        # Create timestamp-based tag for rollback capability
+        TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+        SHORT_SHA=${GITHUB_SHA::8}
+        TAG="${TIMESTAMP}-${SHORT_SHA}"
+        echo "docker_tag=${TAG}" >> $GITHUB_OUTPUT
+        echo "Generated tag: ${TAG}"
 
     - name: Log in to Docker Hub
-      run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u "rahul4251" --password-stdin
+      uses: docker/login-action@v2
+      with:
+        username: rahul4251
+        password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-    - name: Build Docker image
-      run: docker build -t rahul4251/fastapi:latest .
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ env.DOCKER_IMAGE_NAME }}:${{ steps.tag_image.outputs.docker_tag }}
+          ${{ env.DOCKER_IMAGE_NAME }}:latest
+        cache-from: type=registry,ref=${{ env.DOCKER_IMAGE_NAME }}:latest
+        cache-to: type=inline
 
-    - name: Push Docker image
-      run: docker push rahul4251/fastapi:latest
-
-
-    - name: Set up SSH
- 
+    - name: Log build information
       run: |
+        echo "✅ Image built successfully"
+        echo "Image: ${{ env.DOCKER_IMAGE_NAME }}:${{ steps.tag_image.outputs.docker_tag }}"
+        echo "Commit SHA: ${{ github.sha }}"
+        echo "Build URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # Job 2: Deploy to server with rollback capability
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: production
+    
+    steps:
+    - name: Set up SSH and test connection
+      id: ssh_setup
+      run: |
+        # Create SSH directory and set permissions
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
         chmod 600 ~/.ssh/id_ed25519
+        
+        # Add target server to known hosts
+        ssh-keyscan -H ${{ env.DEPLOYMENT_SERVER }} >> ~/.ssh/known_hosts
         ssh-keyscan -H github.com >> ~/.ssh/known_hosts
-        ssh-keyscan -H 69.62.79.61 >> ~/.ssh/known_hosts
-
-    - name: Debug SSH key setup
-
-      run: |
-        echo "Checking if SSH key file exists and is non-empty..."
-        ls -l ~/.ssh
-        if [ -s ~/.ssh/id_ed25519 ]; then
-          echo "SSH key file exists and is not empty ✅"
-          echo "Key file size:"
-          stat --printf="%s bytes\n" ~/.ssh/id_ed25519
-          echo "First 2 lines of SSH key:"
-          head -n 2 ~/.ssh/id_ed25519 | sed 's/./&/g'
-          echo "Last 2 lines of SSH key:"
-          tail -n 2 ~/.ssh/id_ed25519 | sed 's/./&/g'
+        
+        # Test SSH connection
+        echo "Testing SSH connection to ${{ env.DEPLOYMENT_USER }}@${{ env.DEPLOYMENT_SERVER }}..."
+        if ssh -i ~/.ssh/id_ed25519 \
+                -o ConnectTimeout=10 \
+                -o StrictHostKeyChecking=no \
+                -o BatchMode=yes \
+                ${{ env.DEPLOYMENT_USER }}@${{ env.DEPLOYMENT_SERVER }} \
+                "echo '✅ SSH connection successful' && hostname"; then
+          echo "ssh_status=success" >> $GITHUB_OUTPUT
         else
-          echo "❌ SSH key file is empty or missing"
+          echo "❌ SSH connection failed"
+          echo "ssh_status=failed" >> $GITHUB_OUTPUT
           exit 1
         fi
 
-    - name: Test SSH connection
+    - name: Verify Docker Compose exists on server
       run: |
-        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o BatchMode=yes root@69.62.79.61 "echo '✅ SSH connection successful'" || echo "❌ SSH connection failed"
-    
-    - name: Deployment on vm 
-      env:
-        SSH_KEY: ~/.ssh/id_ed25519
-        DOCKER_USERNAME: rahul4251
-        DOCKER_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
-      run: |
-        ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@69.62.79.61 << EOF
-          echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
-          cd fastapi
-          sudo docker pull rahul4251/fastapi:latest
-          sudo docker compose down
-          sudo docker compose up -d
+        ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOYMENT_USER }}@${{ env.DEPLOYMENT_SERVER }} << 'EOF'
+          echo "🔍 Checking Docker Compose installation..."
+          if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+            echo "❌ Docker Compose not found"
+            exit 1
+          fi
+          
+          echo "🔍 Checking application directory..."
+          if [ ! -d "${{ env.APP_DIR }}" ]; then
+            echo "❌ Application directory not found: ${{ env.APP_DIR }}"
+            exit 1
+          fi
+          
+          echo "✅ Pre-deployment checks passed"
         EOF
+
+    - name: Backup current deployment
+      id: backup
+      run: |
+        CURRENT_TIME=$(date +%Y%m%d-%H%M%S)
+        echo "backup_time=${CURRENT_TIME}" >> $GITHUB_OUTPUT
+        
+        ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOYMENT_USER }}@${{ env.DEPLOYMENT_SERVER }} << EOF
+          cd ${{ env.APP_DIR }}
+          
+          # Backup current compose.yaml
+          if [ -f "compose.yaml" ]; then
+            cp compose.yaml "compose.yaml.backup-${CURRENT_TIME}"
+            echo "📦 Backed up compose.yaml to compose.yaml.backup-${CURRENT_TIME}"
+          fi
+          
+          # Get current running image tag
+          CURRENT_IMAGE=\$(sudo docker ps --format "{{.Image}}" --filter "name=fastapi" | head -1)
+          if [ ! -z "\$CURRENT_IMAGE" ]; then
+            echo "current_image=\${CURRENT_IMAGE}" > deployment.info
+            echo "backup_time=${CURRENT_TIME}" >> deployment.info
+            echo "📦 Current image saved: \${CURRENT_IMAGE}"
+          else
+            echo "⚠️ No current running FastAPI container found"
+            echo "current_image=none" > deployment.info
+          fi
+        EOF
+
+    - name: Update compose.yaml with new tag
+      run: |
+        ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOYMENT_USER }}@${{ env.DEPLOYMENT_SERVER }} << EOF
+          cd ${{ env.APP_DIR }}
+          
+          # Create or update compose.yaml with new image tag
+          cat > compose.yaml << 'COMPOSEYAML'
+services:
+  fastapi:
+    image: ${{ env.DOCKER_IMAGE_NAME }}:${{ needs.build-and-push.outputs.docker_tag }}
+    container_name: fastapi-app
+    ports:
+      - "8069:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - fastapi-network
+    # Uncomment to add volumes if needed
+    # volumes:
+    #   - ./data:/app/data
+
+networks:
+  fastapi-network:
+    driver: bridge
+COMPOSEYAML
+          
+          echo "✅ Updated compose.yaml with image: ${{ env.DOCKER_IMAGE_NAME }}:${{ needs.build-and-push.outputs.docker_tag }}"
+          
+          # Verify compose.yaml syntax
+          if sudo docker compose config > /dev/null 2>&1; then
+            echo "✅ Docker Compose configuration is valid"
+          else
+            echo "❌ Docker Compose configuration has errors"
+            exit 1
+          fi
+        EOF
+
+    - name: Deploy new version
+      id: deploy_new
+      run: |
+        ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOYMENT_USER }}@${{ env.DEPLOYMENT_SERVER }} << 'EOF'
+          cd ${{ env.APP_DIR }}
+          
+          echo "🚀 Starting deployment..."
+          
+          # Pull new image
+          echo "📥 Pulling new image..."
+          if ! sudo docker pull ${{ env.DOCKER_IMAGE_NAME }}:${{ needs.build-and-push.outputs.docker_tag }}; then
+            echo "❌ Failed to pull new image"
+            exit 1
+          fi
+          
+          # Stop and remove old containers
+          echo "🛑 Stopping existing containers..."
+          sudo docker compose down --timeout 30
+          
+          # Start new containers
+          echo "🚀 Starting new containers..."
+          if ! sudo docker compose up -d; then
+            echo "❌ Failed to start new containers"
+            exit 1
+          fi
+          
+          # Wait for container to be healthy
+          echo "⏳ Waiting for container to be healthy..."
+          sleep 10
+          
+          # Check if container is running
+          CONTAINER_STATUS=\$(sudo docker ps --filter "name=fastapi-app" --format "{{.Status}}")
+          if [ -z "\$CONTAINER_STATUS" ]; then
+            echo "❌ Container failed to start"
+            sudo docker compose logs
+            exit 1
+          fi
+          
+          echo "✅ Container status: \$CONTAINER_STATUS"
+          
+          # Save deployment info
+          echo "deployment_time=\$(date +%Y%m%d-%H%M%S)" >> deployment.info
+          echo "new_image=${{ env.DOCKER_IMAGE_NAME }}:${{ needs.build-and-push.outputs.docker_tag }}" >> deployment.info
+          echo "commit_sha=${{ needs.build-and-push.outputs.commit_sha }}" >> deployment.info
+          
+          echo "🎉 Deployment completed successfully!"
+        EOF
+
+    - name: Verify deployment
+      run: |
+        ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOYMENT_USER }}@${{ env.DEPLOYMENT_SERVER }} << 'EOF'
+          cd ${{ env.APP_DIR }}
+          
+          echo "🔍 Verifying deployment..."
+          
+          # Check container status
+          echo "📊 Container status:"
+          sudo docker ps --filter "name=fastapi-app" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          
+          # Check logs for errors
+          echo "📋 Recent logs (last 10 lines):"
+          sudo docker compose logs --tail=10
+          
+          # Health check
+          echo "🏥 Performing health check..."
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          
+          while [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
+            if curl -f http://localhost:8069/health 2>/dev/null; then
+              echo "✅ Health check passed!"
+              break
+            else
+              echo "⏳ Health check attempt \$((RETRY_COUNT + 1)) of \$MAX_RETRIES failed"
+              RETRY_COUNT=\$((RETRY_COUNT + 1))
+              sleep 5
+            fi
+          done
+          
+          if [ \$RETRY_COUNT -eq \$MAX_RETRIES ]; then
+            echo "❌ Health check failed after \$MAX_RETRIES attempts"
+            echo "📋 Full container logs:"
+            sudo docker compose logs
+            exit 1
+          fi
+          
+          echo "🎉 Verification completed successfully!"
+        EOF
+
+    # Rollback step that runs only if deployment fails
+    - name: Rollback deployment (if needed)
+      if: failure() && steps.backup.outcome == 'success'
+      run: |
+        echo "🔄 Initiating rollback..."
+        
+        ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOYMENT_USER }}@${{ env.DEPLOYMENT_SERVER }} << 'EOF'
+          cd ${{ env.APP_DIR }}
+          
+          echo "📦 Restoring from backup..."
+          
+          # Restore previous compose.yaml
+          BACKUP_FILE=\$(ls -t compose.yaml.backup-* | head -1)
+          if [ -f "\$BACKUP_FILE" ]; then
+            cp "\$BACKUP_FILE" compose.yaml
+            echo "✅ Restored compose.yaml from \$BACKUP_FILE"
+          fi
+          
+          # Get previous image from backup info
+          if [ -f "deployment.info" ]; then
+            PREVIOUS_IMAGE=\$(grep "current_image" deployment.info | cut -d'=' -f2)
+            if [ "\$PREVIOUS_IMAGE" != "none" ]; then
+              echo "🔄 Rolling back to previous image: \$PREVIOUS_IMAGE"
+              
+              # Pull previous image if not present
+              sudo docker pull "\$PREVIOUS_IMAGE" 2>/dev/null || true
+              
+              # Stop current containers
+              sudo docker compose down --timeout 30
+              
+              # Start previous containers
+              sudo docker compose up -d
+              
+              echo "✅ Rollback completed to \$PREVIOUS_IMAGE"
+            else
+              echo "⚠️ No previous image found, keeping current state"
+            fi
+          fi
+          
+          # Send notification (you can add webhook here)
+          echo "🚨 Deployment failed - Rollback completed"
+        EOF
+
+  # Job 3: Post-deployment cleanup and notification (optional)
+  cleanup:
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy]
+    if: always()  # Run this job regardless of previous job status
+    
+    steps:
+    - name: Check deployment status
+      run: |
+        if [ "${{ needs.deploy.result }}" == "success" ]; then
+          echo "✅ Deployment succeeded"
+          echo "Image: ${{ env.DOCKER_IMAGE_NAME }}:${{ needs.build-and-push.outputs.docker_tag }}"
+          echo "Deployed to: ${{ env.DEPLOYMENT_SERVER }}:8069"
+        elif [ "${{ needs.deploy.result }}" == "failure" ]; then
+          echo "❌ Deployment failed"
+          echo "Check logs at: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        else
+          echo "⚠️ Deployment status: ${{ needs.deploy.result }}"
+        fi
+
+    - name: Clean up old images (optional)
+      if: success()
+      run: |
+        # This step can clean up old Docker images from registry if needed
+        echo "🗑️ Old image cleanup would run here"
+        # Add your cleanup logic or webhook to external cleanup service
