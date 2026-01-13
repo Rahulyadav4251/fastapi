@@ -100,62 +100,59 @@ jobs:
     - name: Validate test container
       id: validate_test
       run: |
-        echo "🔍 Validating test container..."
-        
-        # Check if container is running
-        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} << EOF
-          # Check if container is running
-          if ! docker ps --filter "name=fastapi-test" --format "{{.Names}}" | grep -q "fastapi-test"; then
-            echo "❌ Test container is not running"
-            echo "📋 Container logs:"
-            docker logs fastapi-test 2>/dev/null || echo "No logs available"
-            exit 1
-          fi
-          
-          echo "✅ Test container is running"
-          
-          # Check container status
-          CONTAINER_STATUS=$(docker ps --filter "name=fastapi-test" --format "{{.Status}}")
-          echo "📊 Container status: ${CONTAINER_STATUS}"
-          
-          # Simple check - see if container is up for 10 seconds
-          echo "⏳ Waiting for container to stabilize..."
-          sleep 20
-          
-          # Check if container is still running
-          if docker ps --filter "name=fastapi-test" --format "{{.Names}}" | grep -q "fastapi-test"; then
-            echo "✅ Test container is stable"
-            exit 0
-          else
-            echo "❌ Test container crashed after 10 seconds"
-            echo "📋 Container logs:"
-            docker logs fastapi-test 2>/dev/null || echo "No logs available"
-            exit 1
-          fi
-        EOF
-        
-        # Check if SSH command succeeded
-        if [ $? -eq 0 ]; then
-          echo "test_passed=true" >> $GITHUB_OUTPUT
-          echo "✅ Test container validation passed"
-        else
-          echo "test_passed=false" >> $GITHUB_OUTPUT
-          echo "❌ Test container validation failed"
-          
-          # Get detailed logs
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} << EOF
+            echo "🔍 Validating test container..."
+
+            set +e
+            ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} << EOF
+            set -e
+
+            # Check if container is running
+            if ! docker ps --filter "name=fastapi-test" --format "{{.Names}}" | grep -q fastapi-test; then
+                echo "❌ Test container is not running"
+                docker logs fastapi-test 2>/dev/null || echo "No logs available"
+                exit 1
+            fi
+
+            echo "✅ Test container is running"
+
+            CONTAINER_STATUS=\$(docker ps --filter "name=fastapi-test" --format "{{.Status}}")
+            echo "📊 Container status: \$CONTAINER_STATUS"
+
+            echo "⏳ Waiting for container to stabilize..."
+            sleep 20
+
+            if docker ps --filter "name=fastapi-test" --format "{{.Names}}" | grep -q fastapi-test; then
+                echo "✅ Test container is stable"
+            else
+                echo "❌ Test container crashed after stabilization period"
+                docker logs fastapi-test 2>/dev/null || echo "No logs available"
+                exit 1
+            fi
+            EOF
+
+            SSH_EXIT_CODE=$?
+
+            if [ $SSH_EXIT_CODE -eq 0 ]; then
+            echo "test_passed=true" >> $GITHUB_OUTPUT
+            echo "✅ Test container validation passed"
+            else
+            echo "test_passed=false" >> $GITHUB_OUTPUT
+            echo "❌ Test container validation failed"
+
             echo "=== TEST CONTAINER FAILURE DETAILS ==="
-            echo "1. All containers status:"
-            docker ps -a
-            echo ""
-            echo "2. Test container logs (last 30 lines):"
-            docker logs fastapi-test --tail 30 2>/dev/null || echo "No logs available"
-            echo ""
-            echo "3. Test container exit code:"
-            docker inspect fastapi-test --format='{{.State.ExitCode}}' 2>/dev/null || echo "Container not found"
-          EOF
-          exit 1
-        fi
+            ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} << EOF
+                echo "1. All containers status:"
+                docker ps -a || true
+                echo ""
+                echo "2. Test container logs (last 30 lines):"
+                docker logs fastapi-test --tail 30 2>/dev/null || echo "No logs available"
+                echo ""
+                echo "3. Test container exit code:"
+                docker inspect fastapi-test --format='{{.State.ExitCode}}' 2>/dev/null || echo "Container not found"
+            EOF
+
+            exit 1
+            fi
 
     # Step 10: If test passes, tag as stable and deploy
     - name: Tag as stable and deploy
