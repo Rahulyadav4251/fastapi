@@ -1,13 +1,16 @@
 from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-import  sdfasd
+
 
 app = FastAPI()
 
 @app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI on AWS App Runner"}
+async def read_root():
+    return JSONResponse(
+        content={"<h1>Hello from FastAPI on AWS App Runner</h1>"},
+        media_type="text/html"
+    )
 
 
 @app.get("/health")
